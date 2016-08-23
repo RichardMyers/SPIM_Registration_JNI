@@ -134,12 +134,12 @@ public class DifferenceOfGaussianJNI {
     {
         IOFunctions.println( "Using DifferenceOfGaussian method.");
 
-        Img<net.imglib2.type.numeric.real.FloatType> data = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
+        Img<net.imglib2.type.numeric.real.FloatType> fullSizeInput = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
 
         // down sample 'data' to create 'input'
         final AffineTransform3D affineTransform = new AffineTransform3D();
         final RandomAccessibleInterval<net.imglib2.type.numeric.real.FloatType> input =
-                downsample(data, calXY, calZ, downsampleXY, downsampleZ, affineTransform);
+                downsample(fullSizeInput, calXY, calZ, downsampleXY, downsampleZ, affineTransform);
 
         // pre smooth data
         double additionalSigmaX = 0.0;
@@ -148,7 +148,7 @@ public class DifferenceOfGaussianJNI {
         preSmooth(input, additionalSigmaX, additionalSigmaY, additionalSigmaZ);
 
         // wrap 'input' to create imglib1 'img'
-        final Image<FloatType> img = ImgLib2.wrapFloatToImgLib1((Img<net.imglib2.type.numeric.real.FloatType>) data);
+        final Image<FloatType> img = ImgLib2.wrapFloatToImgLib1((Img<net.imglib2.type.numeric.real.FloatType>) input);
 
         ArrayList< InterestPoint >interestPoints = ProcessDOG.compute(
                 null, // cuda
@@ -156,7 +156,7 @@ public class DifferenceOfGaussianJNI {
                 false, // accurateCUDA
                 0, // percentGPUMem
                 img,
-                (Img<net.imglib2.type.numeric.real.FloatType>) data,
+                (Img<net.imglib2.type.numeric.real.FloatType>) input,
                 sigma1,
                 threshold,
                 1, // localization = quadratic
@@ -292,7 +292,7 @@ public class DifferenceOfGaussianJNI {
         final int height = 512;
         final int depth = 100;
         final float calXY = 0.1625f;
-        final float calZ = 0.2f;
+        final float calZ = 0.4f;
         final int downsampleXY = 0; // 0 : a bit less then z-resolution, -1 : a bit more then z-resolution
         final int downsampleZ = 1;
         final float sigma = 1.8f;
@@ -409,10 +409,10 @@ public class DifferenceOfGaussianJNI {
             output = Downsample.simple2x(input, f, new boolean[]{true, false, false});
 
         for (; dsy > 1; dsy /= 2)
-            output = Downsample.simple2x(input, f, new boolean[]{false, true, false});
+            output = Downsample.simple2x(output, f, new boolean[]{false, true, false});
 
         for (; dsz > 1; dsz /= 2)
-            output = Downsample.simple2x(input, f, new boolean[]{false, false, true});
+            output = Downsample.simple2x(output, f, new boolean[]{false, false, true});
 
         return output;
     }
