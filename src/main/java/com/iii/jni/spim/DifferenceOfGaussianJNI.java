@@ -6,19 +6,12 @@ import java.util.List;
 import java.util.Random;
 
 import ij.ImageJ;
-import mpicbg.imglib.algorithm.scalespace.DifferenceOfGaussianPeak;
-import mpicbg.imglib.algorithm.scalespace.DifferenceOfGaussianReal1;
-import mpicbg.imglib.algorithm.scalespace.SubpixelLocalization;
-import mpicbg.imglib.container.array.ArrayContainerFactory;
-import mpicbg.imglib.cursor.LocalizableByDimCursor;
-import mpicbg.imglib.cursor.LocalizableCursor;
 import mpicbg.imglib.image.Image;
-import mpicbg.imglib.image.ImageFactory;
-import mpicbg.imglib.outofbounds.OutOfBoundsStrategyValueFactory;
+import mpicbg.imglib.outofbounds.OutOfBoundsStrategyMirrorFactory;
 import mpicbg.imglib.type.numeric.real.FloatType;
 import mpicbg.imglib.wrapper.ImgLib2;
 import mpicbg.spim.io.IOFunctions;
-import mpicbg.spim.registration.detection.DetectionSegmentation;
+import mpicbg.spim.registration.bead.laplace.LaPlaceFunctions;
 import net.imglib2.Cursor;
 import net.imglib2.IterableInterval;
 import net.imglib2.RandomAccessible;
@@ -33,8 +26,12 @@ import net.imglib2.realtransform.AffineTransform3D;
 import net.imglib2.type.numeric.RealType;
 import net.imglib2.util.Util;
 import net.imglib2.view.Views;
+import spim.Threads;
 import spim.fiji.spimdata.interestpoints.InterestPoint;
+import spim.process.fusion.FusionHelper;
+import spim.process.interestpointdetection.DifferenceOfGaussianNewPeakFinder;
 import spim.process.interestpointdetection.Downsample;
+import spim.process.interestpointdetection.Localization;
 import spim.process.interestpointdetection.ProcessDOG;
 
 /**
@@ -59,7 +56,7 @@ public class DifferenceOfGaussianJNI {
         try {
             if (useInteractiveDoGMethod) {
                 // use example from InteractiveDoG.java
-                interestPointsArray = InteractiveDoG(inImage, width, height, sigma1, threshold);
+                interestPointsArray = directDoG(inImage, width, height, depth, calXY, calZ, downsampleXY, downsampleZ, sigma1, threshold);
             } else {
                 // use example from DifferenceOfGaussian.java
                 interestPointsArray = DifferenceOfGaussian(inImage, width, height, depth,
@@ -73,55 +70,66 @@ public class DifferenceOfGaussianJNI {
         return interestPointsArray;
     }
 
-    public static float[] InteractiveDoG(final float[] inImage, final int width, final int height,
-                                         final float sigma1, final float threshold)
+    public static float[] directDoG(final float[] inImage, final int width, final int height, final int depth, final float calXY, final float calZ, final int downsampleXY, final int downsampleZ,
+                                         final float intialSigma, final float threshold)
     {
-        IOFunctions.println( "Using DifferenceOfGaussian method.");
+        IOFunctions.println( "Using DifferenceOfGaussian directly");
 
-        Image<FloatType> img = new ImageFactory<FloatType>(new FloatType(), new ArrayContainerFactory()).
-                createImage(new int[]{width, height});
+        final Img<net.imglib2.type.numeric.real.FloatType> fullSizeInput = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
 
-        final int[] location = new int[2];
-        final LocalizableCursor<FloatType> cursor = img.createLocalizableCursor();
-        final long[] pos = new long[2];
-        while (cursor.hasNext()) {
-            cursor.fwd();
-            cursor.getPosition(location);
-            final long index = location[1] * width + location[0];
-            cursor.getType().set(inImage[(int) index]);
+        // down sample 'data' to create 'input'
+        final AffineTransform3D affineTransform = new AffineTransform3D();
+        final RandomAccessibleInterval<net.imglib2.type.numeric.real.FloatType> input =
+                downsample(fullSizeInput, calXY, calZ, downsampleXY, downsampleZ, affineTransform);
+
+        // normalize the input so the values are comparable
+        FusionHelper.normalizeImage( input, 0, 65535 );
+
+        final Image<FloatType> img = ImgLib2.wrapFloatToImgLib1((Img<net.imglib2.type.numeric.real.FloatType>) input);
+
+        final float k = LaPlaceFunctions.computeK( 4 );
+		final float K_MIN1_INV = LaPlaceFunctions.computeKWeight(k);
+		final int steps = 3;
+		
+		//
+		// Compute the Sigmas for the gaussian convolution
+		//
+		final float[] sigmaStepsX = LaPlaceFunctions.computeSigma( steps, k, intialSigma );
+		final float[] sigmaStepsDiffX = LaPlaceFunctions.computeSigmaDiff( sigmaStepsX, (float)0.5 );
+		
+		final float[] sigmaStepsY = LaPlaceFunctions.computeSigma( steps, k, intialSigma );
+		final float[] sigmaStepsDiffY = LaPlaceFunctions.computeSigmaDiff( sigmaStepsY, (float)0.5 );
+		
+		final float[] sigmaStepsZ = LaPlaceFunctions.computeSigma( steps, k, intialSigma );
+		final float[] sigmaStepsDiffZ = LaPlaceFunctions.computeSigmaDiff( sigmaStepsZ, (float)0.5 );
+		
+		final double[] sigma1 = new double[]{ sigmaStepsDiffX[0], sigmaStepsDiffY[0], sigmaStepsDiffZ[0] };
+		final double[] sigma2 = new double[]{ sigmaStepsDiffX[1], sigmaStepsDiffY[1], sigmaStepsDiffZ[1] };
+		
+		final float minInitialPeakValue = threshold/10.0f;
+
+		IOFunctions.println( "(" + new Date(System.currentTimeMillis()) + "): computing difference-of-gausian (sigma=0.5, " +
+				"threshold=" + threshold + ", sigma1=" + Util.printCoordinates( sigma1 ) + ", sigma2=" + Util.printCoordinates( sigma2 ) + ")" );
+
+		final DifferenceOfGaussianNewPeakFinder dog = new DifferenceOfGaussianNewPeakFinder( img, new OutOfBoundsStrategyMirrorFactory<FloatType>(), sigma1, sigma2, minInitialPeakValue, K_MIN1_INV );
+		dog.setComputeConvolutionsParalell( false );
+		dog.setNumThreads( Threads.numThreads() );
+		dog.setKeepDoGImage( true );
+		dog.process();
+
+		final ArrayList< InterestPoint > finalPeaks = Localization.computeQuadraticLocalization( dog.getSimplePeaks(), dog.getDoGImage(), false, true, threshold, false );
+		dog.getDoGImage().close();
+
+        float[] interestPointsArray = new float[ finalPeaks.size() * 3];
+
+        for (int i = 0; i < finalPeaks.size(); i++)
+        {
+            interestPointsArray[i * 3] = finalPeaks.get(i).getFloatPosition( 0);
+            interestPointsArray[i * 3 + 1] = finalPeaks.get(i).getFloatPosition(1);
+            interestPointsArray[i * 3 + 2] = finalPeaks.get(i).getFloatPosition(2);
         }
 
-        // interactive DoG
-        final float k, K_MIN1_INV;
-        final float[] sigma, sigmaDiff;
-        int sensitivity = 4;
-        float imageSigma = 0.5f;
-        float thresholdMin = 0.0001f;
-
-        k = (float) DetectionSegmentation.computeK(sensitivity);
-        K_MIN1_INV = DetectionSegmentation.computeKWeight(k);
-        sigma = DetectionSegmentation.computeSigma(k, sigma1);
-        sigmaDiff = DetectionSegmentation.computeSigmaDiff(sigma, imageSigma);
-
-        // the upper boundary
-        float sigma2 = sigma[1];
-
-        final DifferenceOfGaussianReal1<FloatType> dog =
-                new DifferenceOfGaussianReal1<FloatType>(img, new OutOfBoundsStrategyValueFactory<FloatType>(), sigmaDiff[0], sigmaDiff[1], threshold / 4, K_MIN1_INV);
-        dog.setKeepDoGImage(true);
-        dog.process();
-
-        final SubpixelLocalization<FloatType> subpixel = new SubpixelLocalization<FloatType>(dog.getDoGImage(), dog.getPeaks());
-        subpixel.process();
-
-        ArrayList<DifferenceOfGaussianPeak<FloatType>> peaks;
-        peaks = dog.getPeaks();
-
-        float[] interestPointsArray = new float[peaks.size() * 2];
-        for (int i = 0; i < peaks.size(); i++) {
-            interestPointsArray[i * 2] = peaks.get(i).get(0);
-            interestPointsArray[i * 2 + 1] = peaks.get(i).get(1);
-        }
+        correctForDownsampling( interestPointsArray, affineTransform );
 
         return interestPointsArray;
     }
@@ -387,7 +395,7 @@ public class DifferenceOfGaussianJNI {
         new ImageJ();
         ImageJFunctions.show( ArrayImgs.floats( image, new long[]{ width, height, depth } ) ).setDisplayRange( 0, 30000 );
 
-        boolean useInteractiveDoGMethod = false;
+        boolean useInteractiveDoGMethod = true;
 
         float[] interestPointsArray =
                 compute(image, width, height, depth, calXY, calZ, downsampleXY, downsampleZ, sigma, threshold, useInteractiveDoGMethod);
@@ -405,37 +413,6 @@ public class DifferenceOfGaussianJNI {
     //
     // helper functions:
     //
-
-    /**
-     * Generate an legacy ImgLib image
-     */
-
-    private static Image<FloatType> createImage(int width, int height) {
-        ImageFactory<FloatType> factory = new ImageFactory<FloatType>(new FloatType(), new ArrayContainerFactory());
-
-        return factory.createImage(new int[]{width, height});
-    }
-
-    private static Image<FloatType> createPopulatedImage(int width, int height, float[] values) {
-        Image<FloatType> image = createImage(width, height);
-
-        LocalizableByDimCursor<FloatType> cursor = image.createLocalizableByDimCursor();
-
-        int[] position = new int[2];
-
-        int i = 0;
-
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                position[0] = x;
-                position[1] = y;
-                cursor.setPosition(position);
-                cursor.getType().set(values[i++]);
-            }
-        }
-
-        return image;
-    }
 
     private static int downsampleFactor(final int downsampleXY, final int downsampleZ, final float calXY, final float calZ) {
         final double log2ratio = Math.log((calZ * downsampleZ) / calXY) / Math.log(2);
