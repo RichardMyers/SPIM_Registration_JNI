@@ -1,6 +1,5 @@
 package com.iii.jni.spim;
 
-import com.sun.tools.javac.util.Assert;
 import mpicbg.imglib.algorithm.scalespace.DifferenceOfGaussianPeak;
 import mpicbg.imglib.algorithm.scalespace.DifferenceOfGaussianReal1;
 import mpicbg.imglib.algorithm.scalespace.SubpixelLocalization;
@@ -22,7 +21,10 @@ import net.imglib2.img.ImgFactory;
 import net.imglib2.img.array.ArrayImg;
 import net.imglib2.img.array.ArrayRandomAccess;
 import net.imglib2.img.array.ArrayImgFactory;
+import net.imglib2.img.array.ArrayImgs;
 import net.imglib2.img.basictypeaccess.array.FloatArray;
+import net.imglib2.img.display.imagej.ImageJFunctions;
+import net.imglib2.multithreading.SimpleMultiThreading;
 import net.imglib2.realtransform.AffineTransform3D;
 import net.imglib2.type.NativeType;
 import net.imglib2.type.numeric.RealType;
@@ -129,8 +131,7 @@ public class DifferenceOfGaussianJNI {
     {
         IOFunctions.println( "Using DifferenceOfGaussian method.");
 
-        Img<net.imglib2.type.numeric.real.FloatType> data;
-        data = makeImage(new net.imglib2.type.numeric.real.FloatType(), inImage, (new long[]{width, height}));
+        Img<net.imglib2.type.numeric.real.FloatType> data = ArrayImgs.floats( inImage, new long[]{ width, height } );
 
         // down sample 'data' to create 'input'
         final AffineTransform3D affineTransform = new AffineTransform3D();
@@ -207,7 +208,10 @@ public class DifferenceOfGaussianJNI {
         int theExpectedPeaks = (width/64 * height/64);
         IOFunctions.println( "theExpectedPeakers = " + theExpectedPeaks );
         IOFunctions.println( "interestPointsArray.length / 2 = " + interestPointsArray.length / 2 );
-        Assert.check(theExpectedPeaks == interestPointsArray.length / 2);
+        if(theExpectedPeaks == interestPointsArray.length / 2)
+        	System.out.println(  "SUCCESS" );
+        else
+        	System.out.println(  "FAIL" );
     }
 
     //
@@ -243,28 +247,6 @@ public class DifferenceOfGaussianJNI {
         }
 
         return image;
-    }
-
-    /**
-     * Generate an ImageLib2 image
-     */
-    private static <T extends RealType<T> & NativeType<T>> Img<T> makeImage(final T type, float[] values, final long[] dims) {
-        final ImgFactory<T> factory = new ArrayImgFactory<T>();
-        final Img<T> result = factory.create(dims, type);
-        final net.imglib2.Cursor<T> cursor = result.cursor();
-        final long[] pos = new long[cursor.numDimensions()];
-        while (cursor.hasNext()) {
-            cursor.fwd();
-            cursor.localize(pos);
-            final long index = pos[1] * dims[0] + pos[0];
-            final float value = values[(int) index];
-            cursor.get().setReal(value);
-        }
-        return result;
-    }
-
-    private static Img<net.imglib2.type.numeric.real.FloatType> makeTestImage2D(long width, long height, float[] values) {
-        return makeImage(new net.imglib2.type.numeric.real.FloatType(), values, new long[]{width, height});
     }
 
     private static int downsampleFactor(final int downsampleXY, final int downsampleZ, final float calXY, final float calZ) {
