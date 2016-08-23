@@ -126,6 +126,33 @@ public class DifferenceOfGaussianJNI {
         return interestPointsArray;
     }
 
+    protected static void correctForDownsampling( final float[] ips, final AffineTransform3D t )
+	{
+		IOFunctions.println("(" + new Date(System.currentTimeMillis()) + "): Correcting coordinates for downsampling using AffineTransform: " + t );
+
+		if ( ips == null || ips.length== 0 )
+		{
+			IOFunctions.println("(" + new Date(System.currentTimeMillis()) + "): WARNING: List is empty." );
+			return;
+		}
+
+		final double[] tmp = new double[ 3 ];
+		final double[] l = new double[ 3 ];
+
+		for ( int i = 0; i < ips.length / 3; ++i )
+		{
+			l[ 0 ] = ips[ i * 3 ];
+			l[ 1 ] = ips[ i * 3 + 1 ];
+			l[ 2 ] = ips[ i * 3 + 2 ];
+
+			t.apply( l, tmp );
+
+			ips[ i * 3 ] = (float)tmp[ 0 ];
+			ips[ i * 3 + 1 ] = (float)tmp[ 1 ];
+			ips[ i * 3 + 2 ] = (float)tmp[ 2 ];
+		}
+	}
+
     public static float[] DifferenceOfGaussian(final float[] inImage, final int width, final int height, final int depth,
                                                final float calXY, final float calZ,
                                                final int downsampleXY, final int downsampleZ,
@@ -175,6 +202,8 @@ public class DifferenceOfGaussianJNI {
             interestPointsArray[i * 3 + 1] = interestPoints.get(i).getFloatPosition(1);
             interestPointsArray[i * 3 + 2] = interestPoints.get(i).getFloatPosition(2);
         }
+
+        correctForDownsampling( interestPointsArray, affineTransform );
 
         return interestPointsArray;
     }
@@ -339,7 +368,7 @@ public class DifferenceOfGaussianJNI {
         final int height = 512;
         final int depth = 100;
         final float calXY = 0.1625f;
-        final float calZ = 0.2f; // 0.2 == no downsampling, 0.4 == downsampling 2x in XY
+        final float calZ = 0.4f; // 0.2 == no downsampling, 0.4 == downsampling 2x in XY
         final int downsampleXY = 0; // 0 : a bit less then z-resolution, -1 : a bit more then z-resolution
         final int downsampleZ = 1;
         final float sigma = 1.5f;
@@ -365,7 +394,7 @@ public class DifferenceOfGaussianJNI {
 
         IOFunctions.println( "theExpectedPeakers = " + numPeaks );
         IOFunctions.println( "interestPointsArray.length / 3 = " + interestPointsArray.length / 3 );
-        IOFunctions.println( testCorrectLocations( beads, interestPointsArray, 0.5 ) + " detections are correctly found with an error of 0.5 px" );
+        IOFunctions.println( testCorrectLocations( beads, interestPointsArray, 0.5 ) + " (out of " + interestPointsArray.length / 3 + ") detections are correctly found with an error of 0.5 px" );
 
         if( numPeaks == interestPointsArray.length / 3 )
         	System.out.println( "SUCCESS" );
