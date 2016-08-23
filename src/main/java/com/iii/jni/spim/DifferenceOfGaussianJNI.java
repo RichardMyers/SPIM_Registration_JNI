@@ -28,12 +28,15 @@ import net.imglib2.multithreading.SimpleMultiThreading;
 import net.imglib2.realtransform.AffineTransform3D;
 import net.imglib2.type.NativeType;
 import net.imglib2.type.numeric.RealType;
+import net.imglib2.util.Util;
 import net.imglib2.view.Views;
 import spim.fiji.spimdata.interestpoints.InterestPoint;
 import spim.process.interestpointdetection.Downsample;
 import spim.process.interestpointdetection.ProcessDOG;
 
 import java.util.*;
+
+import ij.ImageJ;
 
 /**
  * Created by Richard on 8/16/2016.
@@ -47,7 +50,7 @@ import java.util.*;
 public class DifferenceOfGaussianJNI {
 
     // call this method from JNI, returns array with {x,y} sub-pixel points of interest
-    public static float[] compute(final float[] inImage, final int width, final int height,
+    public static float[] compute(final float[] inImage, final int width, final int height, final int depth,
                                   final float calXY, final float calZ,
                                   final int downsampleXY, final int downsampleZ,
                                   final float sigma1, final float threshold,
@@ -60,7 +63,7 @@ public class DifferenceOfGaussianJNI {
                 interestPointsArray = InteractiveDoG(inImage, width, height, sigma1, threshold);
             } else {
                 // use example from DifferenceOfGaussian.java
-                interestPointsArray = DifferenceOfGaussian(inImage, width, height,
+                interestPointsArray = DifferenceOfGaussian(inImage, width, height, depth,
                         calXY, calZ, downsampleXY, downsampleZ, sigma1, threshold);
             }
         } catch (Exception e) {
@@ -124,14 +127,14 @@ public class DifferenceOfGaussianJNI {
         return interestPointsArray;
     }
 
-    public static float[] DifferenceOfGaussian(final float[] inImage, final int width, final int height,
+    public static float[] DifferenceOfGaussian(final float[] inImage, final int width, final int height, final int depth,
                                                final float calXY, final float calZ,
                                                final int downsampleXY, final int downsampleZ,
                                                final float sigma1, final float threshold)
     {
         IOFunctions.println( "Using DifferenceOfGaussian method.");
 
-        Img<net.imglib2.type.numeric.real.FloatType> data = ArrayImgs.floats( inImage, new long[]{ width, height } );
+        Img<net.imglib2.type.numeric.real.FloatType> data = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
 
         // down sample 'data' to create 'input'
         final AffineTransform3D affineTransform = new AffineTransform3D();
@@ -167,51 +170,158 @@ public class DifferenceOfGaussianJNI {
                 false // keepIntensity
         );
 
-        float[] interestPointsArray = new float[interestPoints.size() * 2];
+        float[] interestPointsArray = new float[interestPoints.size() * 3];
         for (int i = 0; i < interestPoints.size(); i++) {
-            interestPointsArray[i * 2] = interestPoints.get(i).getFloatPosition(0);
-            interestPointsArray[i * 2 + 1] = interestPoints.get(i).getFloatPosition(1);
+            interestPointsArray[i * 3] = interestPoints.get(i).getFloatPosition(0);
+            interestPointsArray[i * 3 + 1] = interestPoints.get(i).getFloatPosition(1);
+            interestPointsArray[i * 3 + 2] = interestPoints.get(i).getFloatPosition(2);
         }
 
         return interestPointsArray;
     }
 
-    public static void main(String[] args) {
+	final public static void addGaussian(
+			final Img< net.imglib2.type.numeric.real.FloatType > image,
+			final double[] location,
+			final double[] sigma,
+			final double intensity )
+	{
+		final int numDimensions = image.numDimensions();
+		final int[] size = new int[ numDimensions ];
+		
+		final long[] min = new long[ numDimensions ];
+		final long[] max = new long[ numDimensions ];
+		
+		final double[] two_sq_sigma = new double[ numDimensions ];
+		
+		for ( int d = 0; d < numDimensions; ++d )
+		{
+			size[ d ] = Util.getSuggestedKernelDiameter( sigma[ d ] ) * 2;
+			min[ d ] = (int)Math.round( location[ d ] ) - size[ d ]/2;
+			max[ d ] = min[ d ] + size[ d ] - 1;
+			two_sq_sigma[ d ] = 2 * sigma[ d ] * sigma[ d ];
+		}
+
+		final RandomAccessible< net.imglib2.type.numeric.real.FloatType > infinite = Views.extendZero( image );
+		final RandomAccessibleInterval< net.imglib2.type.numeric.real.FloatType > interval = Views.interval( infinite, min, max );
+		final IterableInterval< net.imglib2.type.numeric.real.FloatType > iterable = Views.iterable( interval );
+		final Cursor< net.imglib2.type.numeric.real.FloatType > cursor = iterable.localizingCursor();
+		
+		while ( cursor.hasNext() )
+		{
+			cursor.fwd();
+			
+			double value = 1;
+			
+			for ( int d = 0; d < numDimensions; ++d )
+			{
+				final double x = location[ d ] - cursor.getIntPosition( d );
+				value *= Math.exp( -(x * x) / two_sq_sigma[ d ] );
+			}
+			
+			cursor.get().set( cursor.get().get() + ( (float)value * (float)intensity ) );
+		}
+	}
+
+	/**
+	 * Adds beads at random locations and returns a list of where they were ( the array is modified )
+	 * 
+	 * @param image - the image as float[] array
+	 * @param dim - the dimensionality
+	 * @param sigma - the sigma's of the beads to add
+	 * @param numBeads - how many beads to add
+	 * @param distanceToBorder - how far away from the image edge the beads can be
+	 * @return - a list of where the beads are
+	 */
+	private static List< double[] > addBeads(
+			final float[] image,
+			final long[] dim,
+			final double[] sigma,
+			final int numBeads,
+			final double distanceToBorder )
+	{
+		final int n = dim.length;
+		
+		final Img< net.imglib2.type.numeric.real.FloatType > img = ArrayImgs.floats( image, dim );
+
+		// use a pseudo-random number so that the result is indentical every time
+		final Random rnd = new Random( 435 );
+
+		// base-level of gaussian-distributed noise
+		for ( final net.imglib2.type.numeric.real.FloatType t : img )
+			t.set( (float)Math.abs( rnd.nextGaussian() ) );
+
+		final ArrayList< double[] > locations = new ArrayList<>();
+
+		for ( int i = 0; i < numBeads; ++i )
+		{
+			final double loc[] = new double[ n ];
+
+			for ( int d = 0; d < n; ++d )
+				loc[ d ] = rnd.nextDouble() * (dim[ d ] - 2*distanceToBorder) + distanceToBorder;
+
+			locations.add( loc );
+
+			addGaussian( img, loc, sigma, 10 );
+		}
+
+		return locations;
+	}
+
+	private static double max( final float[] image )
+	{
+		double max = -1;
+
+		for ( final float t : image )
+			max = Math.max( max, t );
+
+		return max;
+	}
+
+	private static void digitize( final float[] image, final int maxValue )
+	{
+		final double max = max( image );
+
+		for ( int i = 0; i < image.length; ++i )
+			image[ i ] = Math.round( ( image[ i ] / max ) * maxValue );
+	}
+
+    public static void main(String[] args)
+    {
         final int width = 512;
         final int height = 512;
+        final int depth = 100;
         final float calXY = 0.1625f;
         final float calZ = 0.2f;
         final int downsampleXY = 0; // 0 : a bit less then z-resolution, -1 : a bit more then z-resolution
         final int downsampleZ = 1;
         final float sigma = 1.8f;
-        final float threshold = 0.008f;
-        float[] image = new float[width * height];
+        final float threshold = 0.05f;
+        float[] image = new float[ width * height * depth ];
+        int numPeaks = 300;
 
-        Random rand = new Random();
-        for (int i = 0; i < width * height; i++) {
-            // noise with peak every 10x10 pixels
-            int row = i / width + 32;
-            int col = i - row * width + 32;
-            if (row % 64 == 0 && col % 64 == 0 ) {
-                image[i] = 2000f  + (rand.nextFloat() * 100f);
-            }
-            else {
-                image[i] = 1f;
-            }
-        }
+        // add 300 random beads (sigma=1.5,1.5,2.0, at least 5px to the border) and save where they were
+        final List< double[] > beads = addBeads( image, new long[]{ width, height, depth }, new double[]{ 1.5, 1.5, 2 }, numPeaks, 5 );
+
+        // scale the intensities between 0 ... 65535
+        // (the threshold in the DoG is relative to the max intensity which is assumed to be 65535 here)
+        digitize( image, 65535 );
+
+        // display slightly saturated
+        new ImageJ();
+        ImageJFunctions.show( ArrayImgs.floats( image, new long[]{ width, height, depth } ) ).setDisplayRange( 0, 30000 );
 
         boolean useInteractiveDoGMethod = false;
 
         float[] interestPointsArray =
-                compute(image, width, height, calXY, calZ, downsampleXY, downsampleZ, sigma, threshold, useInteractiveDoGMethod);
+                compute(image, width, height, depth, calXY, calZ, downsampleXY, downsampleZ, sigma, threshold, useInteractiveDoGMethod);
 
-        int theExpectedPeaks = (width/64 * height/64);
-        IOFunctions.println( "theExpectedPeakers = " + theExpectedPeaks );
-        IOFunctions.println( "interestPointsArray.length / 2 = " + interestPointsArray.length / 2 );
-        if(theExpectedPeaks == interestPointsArray.length / 2)
-        	System.out.println(  "SUCCESS" );
+        IOFunctions.println( "theExpectedPeakers = " + numPeaks );
+        IOFunctions.println( "interestPointsArray.length / 3 = " + interestPointsArray.length / 3 );
+        if( numPeaks == interestPointsArray.length / 3 )
+        	System.out.println( "SUCCESS" );
         else
-        	System.out.println(  "FAIL" );
+        	System.out.println( "FAIL" );
     }
 
     //
