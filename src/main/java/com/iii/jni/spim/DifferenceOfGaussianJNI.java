@@ -1,5 +1,11 @@
 package com.iii.jni.spim;
 
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Random;
+
+import ij.ImageJ;
 import mpicbg.imglib.algorithm.scalespace.DifferenceOfGaussianPeak;
 import mpicbg.imglib.algorithm.scalespace.DifferenceOfGaussianReal1;
 import mpicbg.imglib.algorithm.scalespace.SubpixelLocalization;
@@ -13,30 +19,23 @@ import mpicbg.imglib.type.numeric.real.FloatType;
 import mpicbg.imglib.wrapper.ImgLib2;
 import mpicbg.spim.io.IOFunctions;
 import mpicbg.spim.registration.detection.DetectionSegmentation;
-import net.imglib2.*;
+import net.imglib2.Cursor;
+import net.imglib2.IterableInterval;
+import net.imglib2.RandomAccessible;
+import net.imglib2.RandomAccessibleInterval;
 import net.imglib2.algorithm.gauss3.Gauss3;
 import net.imglib2.exception.IncompatibleTypeException;
 import net.imglib2.img.Img;
 import net.imglib2.img.ImgFactory;
-import net.imglib2.img.array.ArrayImg;
-import net.imglib2.img.array.ArrayRandomAccess;
-import net.imglib2.img.array.ArrayImgFactory;
 import net.imglib2.img.array.ArrayImgs;
-import net.imglib2.img.basictypeaccess.array.FloatArray;
 import net.imglib2.img.display.imagej.ImageJFunctions;
-import net.imglib2.multithreading.SimpleMultiThreading;
 import net.imglib2.realtransform.AffineTransform3D;
-import net.imglib2.type.NativeType;
 import net.imglib2.type.numeric.RealType;
 import net.imglib2.util.Util;
 import net.imglib2.view.Views;
 import spim.fiji.spimdata.interestpoints.InterestPoint;
 import spim.process.interestpointdetection.Downsample;
 import spim.process.interestpointdetection.ProcessDOG;
-
-import java.util.*;
-
-import ij.ImageJ;
 
 /**
  * Created by Richard on 8/16/2016.
@@ -230,6 +229,7 @@ public class DifferenceOfGaussianJNI {
 	 * @param dim - the dimensionality
 	 * @param sigma - the sigma's of the beads to add
 	 * @param numBeads - how many beads to add
+	 * @param intensity - relative intensity of the beads over the noise
 	 * @param distanceToBorder - how far away from the image edge the beads can be
 	 * @return - a list of where the beads are
 	 */
@@ -238,6 +238,7 @@ public class DifferenceOfGaussianJNI {
 			final long[] dim,
 			final double[] sigma,
 			final int numBeads,
+			final double intensity,
 			final double distanceToBorder )
 	{
 		final int n = dim.length;
@@ -262,7 +263,7 @@ public class DifferenceOfGaussianJNI {
 
 			locations.add( loc );
 
-			addGaussian( img, loc, sigma, 10 );
+			addGaussian( img, loc, sigma, intensity );
 		}
 
 		return locations;
@@ -286,22 +287,68 @@ public class DifferenceOfGaussianJNI {
 			image[ i ] = Math.round( ( image[ i ] / max ) * maxValue );
 	}
 
+	final static public double squareDistance( final double[] p1, final double[] p2 )
+	{
+		double sum = 0.0;
+		for ( int i = 0; i < p1.length; ++i )
+		{
+			final double d = p1[ i ] - p2[ i ];
+			sum += d * d;
+		}
+		return sum;
+	}
+
+	/**
+	 * How many of the detected points are within a certain distance of a known point
+	 * 
+	 * @param locations - the simulated locations
+	 * @param interestPointsArray - the found locations
+	 * @param tolerance - the tolerance distance (in px)
+	 * @return how many points are correct given the tolerance
+	 */
+	private static int testCorrectLocations( final List< double[] > locations, final float[] interestPointsArray, final double tolerance )
+	{
+		final double[] l = new double[ 3 ];
+		final double squareTolerance = tolerance * tolerance;
+
+		int correctLocations = 0;
+
+		// this is very inefficient and could use a tree structure instead of stupid search
+		for ( int i = 0; i < interestPointsArray.length/3; ++i )
+		{
+			l[ 0 ] = interestPointsArray[ i * 3 ];
+			l[ 1 ] = interestPointsArray[ i * 3 + 1 ];
+			l[ 2 ] = interestPointsArray[ i * 3 + 2 ];
+
+			boolean found = false;
+
+			for ( int j = 0; j < locations.size() && !found; ++j )
+				if ( squareDistance( locations.get( j ), l ) <= squareTolerance )
+					found = true;
+
+			if ( found )
+				++correctLocations;
+		}
+
+		return correctLocations;
+	}
+
     public static void main(String[] args)
     {
         final int width = 512;
         final int height = 512;
         final int depth = 100;
         final float calXY = 0.1625f;
-        final float calZ = 0.4f;
+        final float calZ = 0.2f; // 0.2 == no downsampling, 0.4 == downsampling 2x in XY
         final int downsampleXY = 0; // 0 : a bit less then z-resolution, -1 : a bit more then z-resolution
         final int downsampleZ = 1;
-        final float sigma = 1.8f;
+        final float sigma = 1.5f;
         final float threshold = 0.05f;
         float[] image = new float[ width * height * depth ];
-        int numPeaks = 300;
+        int numPeaks = 200;
 
         // add 300 random beads (sigma=1.5,1.5,2.0, at least 5px to the border) and save where they were
-        final List< double[] > beads = addBeads( image, new long[]{ width, height, depth }, new double[]{ 1.5, 1.5, 2 }, numPeaks, 5 );
+        final List< double[] > beads = addBeads( image, new long[]{ width, height, depth }, new double[]{ 1.5, 1.5, 2 }, numPeaks, 10, 5 );
 
         // scale the intensities between 0 ... 65535
         // (the threshold in the DoG is relative to the max intensity which is assumed to be 65535 here)
@@ -318,6 +365,8 @@ public class DifferenceOfGaussianJNI {
 
         IOFunctions.println( "theExpectedPeakers = " + numPeaks );
         IOFunctions.println( "interestPointsArray.length / 3 = " + interestPointsArray.length / 3 );
+        IOFunctions.println( testCorrectLocations( beads, interestPointsArray, 0.5 ) + " detections are correctly found with an error of 0.5 px" );
+
         if( numPeaks == interestPointsArray.length / 3 )
         	System.out.println( "SUCCESS" );
         else
