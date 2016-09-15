@@ -52,15 +52,24 @@ public class DifferenceOfGaussianJNI {
                                   final float sigma1, final float threshold,
                                   final boolean useInteractiveDoGMethod)
     {
+        // scale the intensities between 0 ... 65535
+        // (the threshold in the DoG is relative to the max intensity which is assumed to be 65535 here)
+        digitize( inImage, 65535 );
+
+        final Img<net.imglib2.type.numeric.real.FloatType> image = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
+
+        // display slightly saturated
+        // new ImageJ();
+        // ImageJFunctions.show( image ).setDisplayRange( 0, 30000 );
+
         float[] interestPointsArray = null;
         try {
             if (useInteractiveDoGMethod) {
                 // use example from InteractiveDoG.java
-                interestPointsArray = directDoG(inImage, width, height, depth, calXY, calZ, downsampleXY, downsampleZ, sigma1, threshold);
+                interestPointsArray = directDoG(image, calXY, calZ, downsampleXY, downsampleZ, sigma1, threshold);
             } else {
                 // use example from DifferenceOfGaussian.java
-                interestPointsArray = DifferenceOfGaussian(inImage, width, height, depth,
-                        calXY, calZ, downsampleXY, downsampleZ, sigma1, threshold);
+                interestPointsArray = DifferenceOfGaussian(image, calXY, calZ, downsampleXY, downsampleZ, sigma1, threshold);
             }
         } catch (Exception e) {
             IOFunctions.println("DifferenceOfGaussianJNI.compute:: failed. " + e);
@@ -70,17 +79,15 @@ public class DifferenceOfGaussianJNI {
         return interestPointsArray;
     }
 
-    public static float[] directDoG(final float[] inImage, final int width, final int height, final int depth, final float calXY, final float calZ, final int downsampleXY, final int downsampleZ,
+    public static float[] directDoG(final Img<net.imglib2.type.numeric.real.FloatType> image, final float calXY, final float calZ, final int downsampleXY, final int downsampleZ,
                                          final float intialSigma, final float threshold)
     {
         IOFunctions.println( "Using DifferenceOfGaussian directly");
 
-        final Img<net.imglib2.type.numeric.real.FloatType> fullSizeInput = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
-
         // down sample 'data' to create 'input'
         final AffineTransform3D affineTransform = new AffineTransform3D();
         final RandomAccessibleInterval<net.imglib2.type.numeric.real.FloatType> input =
-                downsample(fullSizeInput, calXY, calZ, downsampleXY, downsampleZ, affineTransform);
+                downsample(image, calXY, calZ, downsampleXY, downsampleZ, affineTransform);
 
         // normalize the input so the values are comparable
         FusionHelper.normalizeImage( input, 0, 65535 );
@@ -161,19 +168,17 @@ public class DifferenceOfGaussianJNI {
 		}
 	}
 
-    public static float[] DifferenceOfGaussian(final float[] inImage, final int width, final int height, final int depth,
+    public static float[] DifferenceOfGaussian(final Img<net.imglib2.type.numeric.real.FloatType> image,
                                                final float calXY, final float calZ,
                                                final int downsampleXY, final int downsampleZ,
                                                final float sigma1, final float threshold)
     {
         IOFunctions.println( "Using DifferenceOfGaussian method.");
 
-        Img<net.imglib2.type.numeric.real.FloatType> fullSizeInput = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
-
         // down sample 'data' to create 'input'
         final AffineTransform3D affineTransform = new AffineTransform3D();
         final RandomAccessibleInterval<net.imglib2.type.numeric.real.FloatType> input =
-                downsample(fullSizeInput, calXY, calZ, downsampleXY, downsampleZ, affineTransform);
+                downsample(image, calXY, calZ, downsampleXY, downsampleZ, affineTransform);
 
         // pre smooth data
         double additionalSigmaX = 0.0;
