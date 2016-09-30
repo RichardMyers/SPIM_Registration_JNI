@@ -54,7 +54,7 @@ public class DifferenceOfGaussianJNI {
     {
         // scale the intensities between 0 ... 65535
         // (the threshold in the DoG is relative to the max intensity which is assumed to be 65535 here)
-        digitize( inImage, 65535 );
+        // digitize( inImage, 65535 );
 
         final Img<net.imglib2.type.numeric.real.FloatType> image = ArrayImgs.floats( inImage, new long[]{ width, height, depth } );
 
